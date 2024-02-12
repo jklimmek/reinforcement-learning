@@ -1,6 +1,5 @@
 from collections import deque
 
-from tabulate import tabulate
 import torch
 import torch.nn as nn
 import torch.optim as optim
