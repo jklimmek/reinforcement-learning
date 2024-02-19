@@ -4,11 +4,10 @@ import numpy as np
 import torch
 
 
-def seed_everything(env, seed=None):
+def seed_everything(seed=None):
     if seed is not None:
         torch.manual_seed(seed)
         np.random.seed(seed)
-        env.seed(seed)
 
         if torch.cuda.is_available():
             torch.backends.cudnn.deterministic = True
