@@ -4,4 +4,5 @@ Welcome to the Reinforcement Learning Zoo! This repository is a collection of di
 
 ## Implemented Algorithms
 
-1. Deep Q Network (DQN): This algorithm is one of the fundamental techniques in reinforcement learning, trained on LunarLander-v2.
+1. Deep Q Network (DQN): Basic implementation, trained on LunarLander-v2.
+2. Policy Gradients (PG) - REINFORCE on LunarLander-v2.
