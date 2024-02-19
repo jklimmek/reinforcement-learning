@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 
+
 def seed_everything(seed=None):
     if seed is not None:
         torch.manual_seed(seed)
@@ -14,10 +15,12 @@ def seed_everything(seed=None):
             torch.backends.cudnn.benchmark = False
 
 
-def save_dqn(model, path):
+
+def save_pg(model, path):
     dir_path, name = os.path.split(path)
     os.makedirs(dir_path, exist_ok=True)
     torch.save(model.state_dict(), os.path.join(dir_path, name))
+
 
 
 def get_run_name():

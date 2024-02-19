@@ -34,7 +34,7 @@ def parse_arguments():
 
     parser.add_argument("--logging_freq", type=int, default=10, help="Frequency of logging to Tensorboard.")
     parser.add_argument("--log_dir", type=str, default="logs", help="Path to output logs.")
-    parser.add_argument("--comment", type=str, default="", help="Comment for Tensroabord.")
+    parser.add_argument("--comment", type=str, default="", help="Comment for Tensorboard.")
     args = parser.parse_args()
 
     config = dict()
