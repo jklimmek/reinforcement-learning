@@ -1,6 +1,6 @@
 # Reinforcement Learning Zoo
 
-Welcome to the Reinforcement Learning Zoo! This repository is a collection of diverse reinforcement learning algorithms designed to beat OpenAI's gym environments. The goal is to continuously expand the repo over time. Most of algorithms are trained on LunarLander-v2 for simplicity when training and testing the model.
+Welcome to the Reinforcement Learning Zoo! This repository is a collection of diverse reinforcement learning algorithms designed to beat OpenAI's gym environments. The goal is to continuously expand the repo over time. For simplicity most of algorithms are trained on LunarLander-v2.
 
 ## Implemented Algorithms
 
