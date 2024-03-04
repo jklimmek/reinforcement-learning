@@ -40,7 +40,7 @@ def train_pg(config):
 
     agent = Agent(config, env, pg_net, tb_writer)
 
-    seed_everything(env, config["seed"])
+    seed_everything(config["seed"])
 
     for _ in tqdm(range(config["total_episodes"]), total=config["total_episodes"], ncols=100):
 
