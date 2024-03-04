@@ -7,4 +7,4 @@ Welcome to the Reinforcement Learning Zoo! This repository is a collection of di
 1. Deep Q Network (DQN): Soft update of target network, trained on LunarLander-v2.
 2. Policy Gradients (PG) - REINFORCE on LunarLander-v2.
 3. Actor-Critic (AC) - Temporal Difference Actor-Critic trained on LunarLander-v2.
-4. Proximal Policy Optimization (PPO) - Coming soon.
+4. Proximal Policy Optimization (PPO) - Convolutional neural net inspired by DeepMind's DQN paper trained to play Atari Breakout. After training for 5,000,000 steps the model achieves score of 400. 
