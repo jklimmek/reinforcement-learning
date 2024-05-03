@@ -7,12 +7,10 @@ from torch.utils.tensorboard import SummaryWriter
 from utils import make_env, get_run_name, seed_almost_everything
 from definitions import ActorCritic, PPO
 
-warnings.filterwarnings('ignore', ".*env.*")
-
 
 def parse_arguments():
     """Parse command line training arguments."""
-    parser = argparse.ArgumentParser(description="Policy Gradients training script on LunarLander-v2.")
+    parser = argparse.ArgumentParser(description="PPO training script on Atari Breakout.")
 
     # Training configuration.
     parser.add_argument("--num_envs", type=int, default=8, help="Number of parallel environments.")
@@ -53,7 +51,7 @@ def parse_arguments():
 
 def train_ppo(config):
     """Start PPO training."""
-
+    
     # Set seed if requested.
     seed_almost_everything(config["seed"])
 
@@ -76,6 +74,7 @@ def train_ppo(config):
 
 
 def main():
+    warnings.filterwarnings('ignore', ".*env.*")
     config = parse_arguments()
     train_ppo(config)
 
