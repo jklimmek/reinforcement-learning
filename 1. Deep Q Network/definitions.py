@@ -182,8 +182,3 @@ class Agent:
 
         tab = "<br>".join(f"{key} {val}" for key, val in hyperparams.items())
         self.tb_writer.add_text("params", tab)
-
-
-if __name__ == "__main__":
-    # todo: Implement testing ✔️❌
-    pass

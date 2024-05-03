@@ -53,7 +53,7 @@ def train_dqn(config):
 
     agent = Agent(config, env, memory_buffer, schedule, policy_dqn, target_dqn, tb_writer)
 
-    seed_everything(env, config["seed"])
+    seed_everything(config["seed"])
     agent.log_hyperparams()
 
     for _ in tqdm(range(config["total_train_steps"]), total=config["total_train_steps"], ncols=100):
@@ -65,7 +65,7 @@ def train_dqn(config):
         agent.maybe_log()
 
         if config["save_freq"] != -1 and agent.train_step % config["save_freq"] == 0:
-            save_dqn(agent.policy_dqn, f"{config["save_to"]}_{agent.train_step}.pt")
+            save_dqn(agent.policy_dqn, f"{config['save_to']}_{agent.train_step}.pt")
 
     agent.tb_writer.close()
     return agent
