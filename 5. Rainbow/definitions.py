@@ -11,7 +11,7 @@ import torch.nn.functional as F
 ### Rainbow components ###
 # ---------------------- #
 # 1. Double Q-leraning   # ok.
-# 2. Prioritized replay  # 
+# 2. Prioritized replay  # ok.
 # 3. Dueling networks    # ok.
 # 4. Multi-step learning # ok.
 # 5. Distributional RL   # ok.
@@ -61,20 +61,21 @@ class NoisyLinear(nn.Module):
 class ReplayBuffer:
     """Replay buffer to store agent's experience supporting multi-step learning."""
 
-    def __init__(self, memory_size, n_steps, gamma):
+    def __init__(self, memory_size, td_steps, gamma):
         self.states = deque(maxlen=memory_size)
         self.actions = deque(maxlen=memory_size)
         self.rewards = deque(maxlen=memory_size)
         self.new_states = deque(maxlen=memory_size)
         self.dones = deque(maxlen=memory_size)
-        self.n_step_buffer = deque(maxlen=n_steps)
+        self.priorities = deque(maxlen=memory_size)
+        self.n_step_buffer = deque(maxlen=td_steps)
         self.memory_size = memory_size
-        self.n_steps = n_steps
+        self.td_steps = td_steps
         self.gamma = gamma
 
     def add(self, state, action, reward, new_state, done):
         self.n_step_buffer.append((state, action, reward, new_state, done))
-        if len(self.n_step_buffer) < self.n_steps:
+        if len(self.n_step_buffer) < self.td_steps:
             return
         
         first_state, first_action, _, _, _ = self.n_step_buffer[0]
@@ -89,17 +90,34 @@ class ReplayBuffer:
         self.rewards.append(last_reward)
         self.new_states.append(last_state)
         self.dones.append(last_done)
+        self.priorities.append(max(self.priorities, default=1.0))
 
-    def get_batch(self, size):
-        indexes = np.random.choice(len(self), size, replace=False)
-        batch_data = [self[i] for i in indexes]
+    def set_priorities(self, indices, errors, offset):
+        for i, e in zip(indices, errors):
+            self.priorities[i] = abs(e) + offset
+
+    def get_batch(self, size, alpha, beta):
+        probs = self.get_probs(alpha)
+        indices = np.random.choice(len(self), size, replace=False, p=probs)
+        batch_data = [self[i] for i in indices]
         states, actions, rewards, new_states, dones = zip(*batch_data)
         states = torch.tensor(np.array(states), dtype=torch.float32)
         actions = torch.tensor(np.array(actions), dtype=torch.long)
         rewards = torch.tensor(np.array(rewards), dtype=torch.float32)
         new_states = torch.tensor(np.array(new_states), dtype=torch.float32)
         dones = torch.tensor(np.array(dones), dtype=torch.long)
-        return states, actions, rewards, new_states, dones
+        importances = self.get_importances(probs[indices], beta)
+        return states, actions, rewards, new_states, dones, importances, indices
+    
+    def get_probs(self, alpha):
+        scaled_priorities = np.array(self.priorities) ** alpha
+        probs = scaled_priorities / scaled_priorities.sum()
+        return probs
+    
+    def get_importances(self, probs, beta):
+        importances = (1 / len(self) * 1 / probs) ** beta
+        importances /= importances.max()
+        return torch.tensor(importances)
 
     def __getitem__(self, index):
         state = self.states[index]
@@ -178,6 +196,7 @@ class Rainbow:
             policy_dqn, 
             target_dqn,
             lr_schedule,
+            beta_schedule,
             tb_writer
         ):
         self.config = config
@@ -187,6 +206,7 @@ class Rainbow:
         self.target_dqn = target_dqn
         self.lr_schedule = lr_schedule
         self.tb_writer = tb_writer
+        self.beta_schedule = beta_schedule
         self.policy_dqn.to(self.config["device"])
         self.target_dqn.to(self.config["device"])
         self.optimizer = optim.Adam(policy_dqn.parameters(), lr=config["learning_rate"])
@@ -210,14 +230,22 @@ class Rainbow:
             state = new_state
 
             if len(self.replay_buffer) >= self.config["min_samples"]:
-                batch_size = self.config["batch_size"]
-                batch = self.replay_buffer.get_batch(batch_size)
-                batch_states, batch_actions, batch_rewards, batch_new_states, batch_dones = batch
+                beta = self.beta_schedule.step()
+                batch = self.replay_buffer.get_batch(self.config["batch_size"], self.config["alpha"], beta)
+                (
+                    batch_states, 
+                    batch_actions, 
+                    batch_rewards, 
+                    batch_new_states, 
+                    batch_dones, 
+                    batch_importances, 
+                    batch_indices
+                ) = batch
 
                 with torch.no_grad():
                     next_action = self.policy_dqn(batch_new_states).argmax(1)
                     next_dist = self.target_dqn.dist(batch_new_states)
-                    next_dist = next_dist[range(batch_size), next_action]
+                    next_dist = next_dist[range(self.config["batch_size"]), next_action]
                     
                     t_z = batch_rewards[:, None] + (1 - batch_dones[:, None]) * self.config["gamma"] ** self.config["n_steps"] * support
                     t_z = t_z.clamp(self.config["v_min"], self.config["v_max"])
@@ -227,8 +255,8 @@ class Rainbow:
 
                     offset =(
                         torch.linspace(
-                            0, (batch_size - 1) * self.config["n_atoms"], batch_size
-                        ).long().unsqueeze(1).expand(batch_size, self.config["n_atoms"])
+                            0, (self.config["batch_size"] - 1) * self.config["n_atoms"], self.config["batch_size"]
+                        ).long().unsqueeze(1).expand(self.config["batch_size"], self.config["n_atoms"])
                     )
 
                     proj_dist = torch.zeros(next_dist.size())
@@ -240,12 +268,17 @@ class Rainbow:
                     )
 
                 dist = self.policy_dqn.dist(batch_states)
-                log_p = torch.log(dist[range(batch_size), batch_actions])
+                log_p = torch.log(dist[range(self.config["batch_size"]), batch_actions])
                 loss = -(proj_dist * log_p).sum(1)
+                deltas = loss.detach().numpy()
+                scaled_loss = loss * batch_importances
+
                 self.optimizer.zero_grad()
-                loss.mean().backward()
+                scaled_loss.mean().backward()
+                nn.utils.clip_grad_norm_(self.policy_dqn.parameters(), 0.5)
                 self.optimizer.step()
                 self.update_networks(tau=self.config["tau"])
+                self.replay_buffer.set_priorities(batch_indices, deltas, self.config["offset"])
             
                 if "final_info" in info.keys():
                     for element in info["final_info"]:
