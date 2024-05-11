@@ -10,4 +10,4 @@ Welcome to the Reinforcement Learning Zoo! This repository is a collection of di
 2. Policy Gradients (PG) - Vanilla REINFORCE on LunarLander-v2.
 3. Actor-Critic (AC) - Temporal Difference Actor-Critic trained on LunarLander-v2.
 4. Proximal Policy Optimization (PPO) - Convolutional neural net inspired by DeepMind's DQN paper trained to play Atari Breakout. After training for 5,000,000 steps the model achieves score of 400. 
-5. Rainbow - Convolutional DQN with six improvements from DeepMind's Rainbow paper trained to beat Atari Pacman.
+5. Rainbow - Convolutional DQN with six improvements from DeepMind's Rainbow paper trained to beat Atari Pacman (For now it is only able to beat LunarLander-v2).
