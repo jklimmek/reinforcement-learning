@@ -1,3 +1,4 @@
+import os
 from collections import deque
 
 import numpy as np
@@ -6,14 +7,15 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+from utils import save_checkpoint
 
 
 ### Rainbow components ###
 # ---------------------- #
 # 1. Double Q-leraning   # ok.
-# 2. Prioritized replay  # ok.
-# 3. Dueling networks    # ok.
-# 4. Multi-step learning # ok.
+# 2. Prioritized Replay  # ok.
+# 3. Dueling Networks    # ok.
+# 4. Multi-step Learning # ok.
 # 5. Distributional RL   # ok.
 # 6. Noisy Nets          # ok.
 
@@ -21,7 +23,7 @@ import torch.nn.functional as F
 class NoisyLinear(nn.Module):
     """Linear layer with added noise to ensure exploration during training."""
 
-    def __init__(self, in_features, out_features, sigma=0.5):
+    def __init__(self, in_features, out_features, sigma):
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
@@ -35,6 +37,7 @@ class NoisyLinear(nn.Module):
         self._init_layers()
 
     def forward(self, x):
+        x = x.to(self.mu_weight.device)
         if self.training:
             self._sample_noise()
             weight = self.mu_weight + self.sigma_weight * torch.outer(self.epsilon_output, self.epsilon_input)
@@ -61,7 +64,7 @@ class NoisyLinear(nn.Module):
 class ReplayBuffer:
     """Replay buffer to store agent's experience supporting multi-step learning."""
 
-    def __init__(self, memory_size, td_steps, gamma):
+    def __init__(self, memory_size, td_steps, gamma, device="cpu"):
         self.states = deque(maxlen=memory_size)
         self.actions = deque(maxlen=memory_size)
         self.rewards = deque(maxlen=memory_size)
@@ -72,6 +75,7 @@ class ReplayBuffer:
         self.memory_size = memory_size
         self.td_steps = td_steps
         self.gamma = gamma
+        self.device = device
 
     def add(self, state, action, reward, new_state, done):
         self.n_step_buffer.append((state, action, reward, new_state, done))
@@ -101,11 +105,11 @@ class ReplayBuffer:
         indices = np.random.choice(len(self), size, replace=False, p=probs)
         batch_data = [self[i] for i in indices]
         states, actions, rewards, new_states, dones = zip(*batch_data)
-        states = torch.tensor(np.array(states), dtype=torch.float32)
-        actions = torch.tensor(np.array(actions), dtype=torch.long)
-        rewards = torch.tensor(np.array(rewards), dtype=torch.float32)
-        new_states = torch.tensor(np.array(new_states), dtype=torch.float32)
-        dones = torch.tensor(np.array(dones), dtype=torch.long)
+        states = torch.tensor(np.array(states), dtype=torch.float32, device=self.device)
+        actions = torch.tensor(np.array(actions), dtype=torch.long, device=self.device)
+        rewards = torch.tensor(np.array(rewards), dtype=torch.float32, device=self.device)
+        new_states = torch.tensor(np.array(new_states), dtype=torch.float32, device=self.device)
+        dones = torch.tensor(np.array(dones), dtype=torch.long, device=self.device)
         importances = self.get_importances(probs[indices], beta)
         return states, actions, rewards, new_states, dones, importances, indices
     
@@ -117,7 +121,7 @@ class ReplayBuffer:
     def get_importances(self, probs, beta):
         importances = (1 / len(self) * 1 / probs) ** beta
         importances /= importances.max()
-        return torch.tensor(importances)
+        return torch.tensor(importances, device=self.device)
 
     def __getitem__(self, index):
         state = self.states[index]
@@ -146,26 +150,21 @@ class LinearSchedule:
         return eps
     
 
-class DQN(nn.Module):
+class NoisyDQN(nn.Module):
     """DQN with distributional output and noisy layers."""
 
-    def __init__(self, v_min, v_max, n_atoms, sigma=0.5):
+    def __init__(self, v_min, v_max, n_atoms, sigma, device="cpu"):
         super().__init__()
         self.n_atoms = n_atoms
-        self.support = torch.linspace(v_min, v_max, n_atoms)
+        self.support = torch.linspace(v_min, v_max, n_atoms, device=device)
         self.core = nn.Sequential(
             NoisyLinear(8, 128, sigma),
             nn.ReLU(),
             NoisyLinear(128, 256, sigma),
-        )
-        self.V_head = nn.Sequential(
             nn.ReLU(),
-            NoisyLinear(256, 1*n_atoms, sigma)
         )
-        self.A_head = nn.Sequential(
-            nn.ReLU(),
-            NoisyLinear(256, 4*n_atoms, sigma)
-        )
+        self.V_head = NoisyLinear(256, 1*n_atoms, sigma)
+        self.A_head = NoisyLinear(256, 4*n_atoms, sigma)
 
     def forward(self, x):
         if not isinstance(x, torch.Tensor):
@@ -181,7 +180,7 @@ class DQN(nn.Module):
         values = self.V_head(hidden).view(-1, 1, self.n_atoms)
         advantages = self.A_head(hidden).view(-1, 4, self.n_atoms)
         q_atoms = values + (advantages - advantages.mean(1, keepdim=True))
-        dist = F.softmax(q_atoms, -1).clamp(1e-3)
+        dist = F.softmax(q_atoms, -1)
         return dist
     
 
@@ -209,25 +208,42 @@ class Rainbow:
         self.beta_schedule = beta_schedule
         self.policy_dqn.to(self.config["device"])
         self.target_dqn.to(self.config["device"])
-        self.optimizer = optim.Adam(policy_dqn.parameters(), lr=config["learning_rate"])
+        self.optimizer = optim.Adam(self.policy_dqn.parameters(), lr=config["lr"], eps=1.5e-4)
         self.update_networks(tau=1.0)
 
     def update_networks(self, tau):
+        """Update target net with policy net using Polyak Averaging."""
         for policy_dqn_param, target_dqn_param in zip(self.policy_dqn.parameters(), self.target_dqn.parameters()):
             target_dqn_param.data.copy_(tau * policy_dqn_param.data + (1.0 - tau) * target_dqn_param.data)
 
     def learn(self):
-        episode = 0
-        state, _ = self.env.reset()
-        support = torch.linspace(self.config["v_min"], self.config["v_max"], self.config["n_atoms"])
-        delta_z = float(self.config["v_max"] - self.config["v_min"]) / (self.config["n_atoms"] - 1)
+        """Training function."""
 
-        # todo: change 'for' to 'while' loop
-        for step in tqdm(range(self.config["num_steps"]), total=self.config["num_steps"], ncols=100):
-            action = self.policy_dqn(state).argmax(1).numpy()
+        episode = 0
+        learning_step = 0
+        experience_step = 0
+        state, _ = self.env.reset()
+
+        support = torch.linspace(self.config["v_min"], self.config["v_max"], self.config["n_atoms"]).to(self.config["device"])
+        delta_z = (self.config["v_max"] - self.config["v_min"]) / (self.config["n_atoms"] - 1)
+
+        reward_buffer = deque(maxlen=self.config["log_buff_size"])
+        length_buffer = deque(maxlen=self.config["log_buff_size"])
+
+        experience_pbar = tqdm(total=self.config["min_samples"], ncols=100, desc="Filling")
+        learning_pbar = tqdm(total=self.config["n_steps"], ncols=100, desc="Learning")
+
+        # Main training loop.
+        while learning_step < self.config["n_steps"]:
+            with torch.no_grad():
+                action = self.policy_dqn(state).argmax(1).cpu().numpy()
             new_state, reward, terminated, truncated, info = self.env.step(action)
             self.replay_buffer.add(state[0], action[0], reward[0], new_state[0], int(terminated | truncated))
             state = new_state
+
+            if experience_step < self.config["min_samples"]:
+                experience_pbar.update(1)
+                experience_step += 1
 
             if len(self.replay_buffer) >= self.config["min_samples"]:
                 beta = self.beta_schedule.step()
@@ -242,24 +258,30 @@ class Rainbow:
                     batch_indices
                 ) = batch
 
+                # Forward pass.
                 with torch.no_grad():
                     next_action = self.policy_dqn(batch_new_states).argmax(1)
                     next_dist = self.target_dqn.dist(batch_new_states)
                     next_dist = next_dist[range(self.config["batch_size"]), next_action]
                     
-                    t_z = batch_rewards[:, None] + (1 - batch_dones[:, None]) * self.config["gamma"] ** self.config["n_steps"] * support
+                    discount = self.config["gamma"] ** self.config["n_steps"]
+                    t_z = batch_rewards[:, None] + (1 - batch_dones[:, None]) * discount * support
                     t_z = t_z.clamp(self.config["v_min"], self.config["v_max"])
                     b = (t_z - self.config["v_min"]) / delta_z
                     l = b.floor().long()
                     u = b.ceil().long()
 
-                    offset =(
+                    offset = (
                         torch.linspace(
                             0, (self.config["batch_size"] - 1) * self.config["n_atoms"], self.config["batch_size"]
-                        ).long().unsqueeze(1).expand(self.config["batch_size"], self.config["n_atoms"])
+                        )
+                        .long()
+                        .unsqueeze(1)
+                        .expand(self.config["batch_size"], self.config["n_atoms"])
+                        .to(self.config["device"])
                     )
 
-                    proj_dist = torch.zeros(next_dist.size())
+                    proj_dist = torch.zeros(next_dist.size(), device=self.config["device"])
                     proj_dist.view(-1).index_add_(
                         0, (l + offset).view(-1), (next_dist * (u.float() - b)).view(-1)
                     )
@@ -270,22 +292,58 @@ class Rainbow:
                 dist = self.policy_dqn.dist(batch_states)
                 log_p = torch.log(dist[range(self.config["batch_size"]), batch_actions])
                 loss = -(proj_dist * log_p).sum(1)
-                deltas = loss.detach().numpy()
-                scaled_loss = loss * batch_importances
+                deltas = loss.detach().cpu().numpy()
+                scaled_loss = (loss * batch_importances).mean()
 
+                # Backward pass.
                 self.optimizer.zero_grad()
-                scaled_loss.mean().backward()
-                nn.utils.clip_grad_norm_(self.policy_dqn.parameters(), 0.5)
+                scaled_loss.backward()
+                if self.config["max_grad_norm"] is not None:
+                    nn.utils.clip_grad_norm_(self.policy_dqn.parameters(), self.config["max_grad_norm"])
                 self.optimizer.step()
-                self.update_networks(tau=self.config["tau"])
+
+                # Update target network.
+                if (learning_step + 1) % self.config["sync_freq"] == 0:
+                    self.update_networks(tau=self.config["tau"])
+
+                # Set new priorities. 
                 self.replay_buffer.set_priorities(batch_indices, deltas, self.config["offset"])
             
+                # Logging to Tensorboard.
                 if "final_info" in info.keys():
                     for element in info["final_info"]:
                         if element and "episode" in element:
-                            self.tb_writer.add_scalar("REWARD", element["episode"]["r"], episode)
-                            # self.tb_writer.add_scalar("LEARNING_RATE", self.optimizer.param_groups[0]["lr"], episode)
+
+                            reward_buffer.append(element["episode"]["r"])
+                            length_buffer.append(element["episode"]["l"])
                             episode += 1
 
-            # todo: change sheduler to orch.optim.lr_scheduler.LinearLR 
-            self.optimizer.param_groups[0]["lr"] = self.lr_schedule.step()
+                            if len(reward_buffer) == self.config["log_buff_size"]:
+                                self.tb_writer.add_scalar("charts/episode_reward", np.mean(reward_buffer), episode)
+                                self.tb_writer.add_scalar("charts/episode_length", np.mean(length_buffer), episode)
+
+                if (learning_step + 1) % self.config["logging_freq"] == 0:
+                    self.tb_writer.add_scalar("charts/learning_rate", self.optimizer.param_groups[0]["lr"], learning_step)
+                    self.tb_writer.add_scalar("charts/beta", beta, learning_step)
+                    self.tb_writer.add_scalar("losses/scaled_loss", scaled_loss.cpu().detach().numpy().mean(), learning_step)
+
+                    grad_norms = []
+                    for _, param in self.policy_dqn.named_parameters():
+                        if param.grad is not None:
+                            grad_norms.append(torch.norm(param.grad, p=2).item())
+
+                    if len(grad_norms) > 0:
+                        self.tb_writer.add_scalar("charts/grad_norm", sum(grad_norms), learning_step)
+
+                # Save a checkpoint during training if the save frequency is specified.
+                if self.config["save_freq"] is not None and (learning_step + 1) % self.config["save_freq"] == 0:
+                    name, ext = os.path.splitext(self.config["save_to"])
+                    checkpoint_name = f"{name}_{learning_step+1}{ext}"
+                    save_checkpoint(checkpoint_name, self.model)
+
+                self.optimizer.param_groups[0]["lr"] = self.lr_schedule.step()
+                learning_pbar.update(1)
+                learning_step += 1
+
+        # Final checkpoint after training.
+        save_checkpoint(self.config["save_to"], self.model)
